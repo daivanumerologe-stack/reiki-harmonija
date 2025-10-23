@@ -7,7 +7,6 @@ import fetch from "node-fetch";
 const app = express();
 app.use(bodyParser.json());
 
-// 🔐 Raktai iš aplinkos kintamųjų (juos įvedei Render'e)
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
@@ -17,77 +16,64 @@ const TELEGRAM_URL = `https://api.telegram.org/bot${TELEGRAM_TOKEN}`;
 // Sveikatos patikra
 app.get("/", (_req, res) => res.send("Reiki botas veikia 🌿"));
 
-/**
- * Telegram webhook priėmimas
- */
+async function askOpenAI(prompt) {
+  const r = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${OPENAI_API_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+  model: MODEL,
+  input:
+    "Tu esi Reiki Harmonijos asistentas. Kalbėk šiltai, ramiai ir profesionaliai. " +
+    "Atsakyk visada lietuviškai, švelniu, harmoningu ir palaikančiu tonu. " +
+        "Vesk žmogų per 7–9 paprastus klausimus (fizinė savijauta, emocijos, miegas, mintys/dėmesys, santykiai, savirealizacija, kūrybiškumas, santykis su savimi, vidinė ramybė). " +
+        "Pabaigoje pateik Reiki stiliaus įžvalgas be čakrų terminų ir kelias švelnias rekomendacijas. " +
+        "Užbaik: 'Tegul energija švelniai teka, stiprindama kūną, subalansuodama mintis ir pripildydama tave ramybe.' " +
+        "Jei žmogus nori daugiau, pasiūlyk: 'Jei šis testas neatsakė į visus tavo klausimus, užsiregistruok konsultacijai. " +
+        "Konsultacijos metu išsamiau įvertinsim tavo būseną ir parinksim tinkamiausius būdus energijos tėkmei atkurti.'\n\n" +
+        `Vartotojas: ${prompt}`
+    })
+  });
+
+  let data = {};
+  try { data = await r.json(); } catch (_) {}
+
+  if (!r.ok) {
+    const msg = data?.error?.message || JSON.stringify(data);
+    throw new Error(`OPENAI_${r.status}: ${msg}`);
+  }
+
+  const text =
+    data.output_text ??
+    data.choices?.[0]?.message?.content?.[0]?.text ??
+    data.choices?.[0]?.message?.content ??
+    "";
+
+  return (text || "Ačiū, gavau žinutę 🙏").toString().trim();
+}
+
+// Telegram webhook
 app.post("/webhook", async (req, res) => {
   try {
-    // Palaikome ir privačias žinutes, ir kanalo įrašus
     const message = req.body.message || req.body.channel_post;
     if (!message || !message.text) return res.sendStatus(200);
 
+    const chatId = message.chat.id;
     const userMessage = message.text;
-    const systemPrompt =
-  "Tu esi Reiki Harmonijos praktinis harmonijos treneris – šiltas, empatiškas ir profesionalus pagalbininkas, padedantis žmogui trumpai įsivertinti savo būseną per 7–9 klausimus. " +
-  "Kalbėk lietuviškai, be klaidų, trumpai ir švelniai. Klausimus pateik po vieną, lauk žmogaus atsakymo ir tik tada pateik kitą. " +
-  "Tavo diagnostikos eiga: " +
-  "1. Fizinė savijauta. " +
-  "2. Emocijos. " +
-  "3. Miegas. " +
-  "4. Mintys ir dėmesys. " +
-  "5. Santykiai su aplinkiniais. " +
-  "6. Santykis su savimi. " +
-  "7. Savirealizacija ir kūrybiškumas. " +
-  "8. Vidinė ramybė ir pasitikėjimas. " +
-  "9. Dvasinis balansas (jei žmogus nori giliau). " +
-  "Po kiekvieno atsakymo pateik trumpą, nuoširdžią reakciją – padrąsinimą ar palaikymą. " +
-  "Kai visi klausimai bus užduoti, pateik švelnų apibendrinimą, nenaudok sudėtingų terminų. " +
-  "Naudok tokius žodžius kaip 'atrodo', 'panašu', 'gali būti', kad išvengtum kategoriškų vertinimų. " +
-  "Pabaigoje visada užbaik sakiniu: 'Tegul energija švelniai teka, stiprindama kūną, subalansuodama mintis ir pripildydama tave ramybe.' " +
-  "Jei žmogus nori giliau suprasti save, pasiūlyk: 'Jei jauti, kad norėtum išsamiau pažinti savo būseną, gali užsiregistruoti į Daivos REI konsultaciją – kartu giliau pažvelgsime į tavo energijos balansą ir padėsime atkurti vidinę darną.'";
 
-    // OpenAI „Responses“ API (patikimiausia schema)
-    const r = await fetch("https://api.openai.com/v1/responses", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${OPENAI_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: MODEL,
-        // paprastai – vienas tekstas su kontekstu ir vartotojo žinute
-        input: `${systemPrompt}\n\nVartotojas: ${userMessage}`
-      })
-    });
+    const reply = await askOpenAI(userMessage);
 
-    const data = await r.json();
-    if (!r.ok) {
-      console.error("OpenAI klaida:", r.status, data);
-      throw new Error(`OpenAI error ${r.status}`);
-    }
-
-    // Universalus atsakymo ištraukimas
-    const replyRaw =
-      data.output_text ??
-      data.choices?.[0]?.message?.content?.[0]?.text ??
-      data.choices?.[0]?.message?.content ??
-      "";
-    const reply = (replyRaw || "Ačiū, gavau žinutę 🙏").toString().trim();
-
-    // Atsakome Telegrame
     await fetch(`${TELEGRAM_URL}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: message.chat.id,
-        text: reply
-      })
+      body: JSON.stringify({ chat_id: chatId, text: reply })
     });
 
     res.sendStatus(200);
   } catch (e) {
     console.error("Klaida /webhook:", e);
-    // Draugiškas atsakymas naudotojui
     try {
       const message = req.body.message || req.body.channel_post;
       if (message?.chat?.id) {
@@ -96,7 +82,7 @@ app.post("/webhook", async (req, res) => {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             chat_id: message.chat.id,
-            text: "Atsiprašau, įvyko klaida 🙏 Pabandyk dar kartą po akimirkos."
+            text: `Diag: ${e.message}`
           })
         });
       }
@@ -107,6 +93,4 @@ app.post("/webhook", async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🌸 Reiki botas paleistas, portas ${PORT}`));
-// 🌸 Reiki Harmonijos Asistentas – Telegram botas per OpenAI API
-
 
